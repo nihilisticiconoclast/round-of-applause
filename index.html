@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Round of Applause</title>
+<meta name="description" content="Spin the wheel to choose who gets the next round of applause, and read the thank-you written for them.">
+<meta name="theme-color" content="#1a31bf">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='30' fill='%23ff2e4d'/%3E%3Ccircle cx='32' cy='32' r='30' fill='none' stroke='%23e9b44c' stroke-width='4'/%3E%3Cpath d='M32 13l5.6 11.4 12.6 1.8-9.1 8.9 2.1 12.5L32 41.7l-11.2 5.9 2.1-12.5-9.1-8.9 12.6-1.8z' fill='%23ffe2a0'/%3E%3C/svg%3E">
+<link rel="preload" href="fonts/big-shoulders-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/fraunces-italic-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+<div class="studio" id="studio">
+  <div class="backdrop" aria-hidden="true">
+    <div class="rays"></div>
+    <div class="beam beam-left"></div>
+    <div class="beam beam-right"></div>
+  </div>
+
+  <header class="marquee">
+    <h1 class="title">
+      <span class="title-lead">Round of</span>
+      <span class="sign" id="sign"><span class="sign-face">Applause</span></span>
+    </h1>
+  </header>
+
+  <div class="controls">
+    <button class="icon-btn" id="sound-btn" type="button" aria-pressed="true" aria-label="Sound">
+      <svg class="icon-on" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.5L12.5 5v14l-5-4.5H4z"/><path d="M16 9a4.5 4.5 0 0 1 0 6"/><path d="M18.5 6.5a8 8 0 0 1 0 11"/></svg>
+      <svg class="icon-off" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.5L12.5 5v14l-5-4.5H4z"/><path d="M16.5 9.5l5 5M21.5 9.5l-5 5"/></svg>
+    </button>
+    <button class="icon-btn" id="lineup-btn" type="button" aria-expanded="false" aria-controls="lineup" aria-label="Line-up">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19c.6-3.3 2.8-5 5.5-5s4.9 1.7 5.5 5"/><circle cx="16.5" cy="9" r="2.6"/><path d="M16 14.2c2.4 0 4 1.5 4.5 4.3"/></svg>
+    </button>
+    <button class="icon-btn" id="fullscreen-btn" type="button" aria-label="Full screen" hidden>
+      <svg class="icon-enter" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+      <svg class="icon-exit" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg>
+    </button>
+  </div>
+
+  <main class="stage">
+    <div class="wheel-wrap" id="wheel-wrap">
+      <canvas id="wheel" role="img" aria-label="Prize wheel"></canvas>
+    </div>
+    <div class="action">
+      <button class="spin" id="spin-btn" type="button">
+        <span class="spin-dome"><span class="spin-label">Spin</span></span>
+      </button>
+      <p class="hint" id="hint">Press Space or tap Spin</p>
+    </div>
+  </main>
+
+  <div class="audience" id="audience" aria-hidden="true"></div>
+</div>
+
+<div class="reveal" id="reveal" hidden>
+  <div class="reveal-shade" id="reveal-shade"></div>
+  <section class="card" id="card" role="dialog" aria-modal="true" aria-labelledby="card-name" aria-describedby="card-message" tabindex="-1">
+    <p class="card-lead">A round of applause for</p>
+    <h2 class="card-name" id="card-name"></h2>
+    <p class="card-message" id="card-message"></p>
+    <p class="card-from" id="card-from"></p>
+    <div class="card-actions">
+      <button class="btn btn-solid" id="again-btn" type="button">Spin again</button>
+      <button class="btn" id="close-btn" type="button">Close</button>
+    </div>
+  </section>
+</div>
+
+<aside class="drawer" id="lineup" aria-labelledby="lineup-title" inert>
+  <div class="drawer-head">
+    <h2 id="lineup-title">Line-up</h2>
+    <button class="icon-btn icon-btn-quiet" id="lineup-close" type="button" aria-label="Close line-up">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
+  </div>
+  <label class="switch">
+    <input type="checkbox" id="rounds-toggle">
+    <span class="switch-track" aria-hidden="true"></span>
+    <span class="switch-text">
+      <strong>Everyone gets a turn first</strong>
+      <span>Nobody is ever picked twice in a row. With this on, nobody comes up again until everyone has had their applause.</span>
+    </span>
+  </label>
+  <ol class="roster" id="roster"></ol>
+  <div class="drawer-foot">
+    <button class="btn btn-quiet" id="reset-btn" type="button">Clear history</button>
+    <p class="note">Sample names and messages. Swap in your own in <code>people.js</code>.</p>
+  </div>
+</aside>
+
+<canvas class="confetti" id="confetti" aria-hidden="true"></canvas>
+<p class="sr-only" id="announcer" aria-live="polite"></p>
+
+<script src="people.js"></script>
+<script src="js/physics.js"></script>
+<script src="js/audio.js"></script>
+<script src="js/wheel.js"></script>
+<script src="js/confetti.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
