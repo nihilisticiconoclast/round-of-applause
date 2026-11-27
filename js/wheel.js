@@ -101,6 +101,15 @@
     ctx.closePath();
   }
 
+  function smoothstep(e0, e1, v) {
+    var t = Math.min(1, Math.max(0, (v - e0) / (e1 - e0)));
+    return t * t * (3 - 2 * t);
+  }
+
+  function toHex(rgb) {
+    return '#' + rgb.map(function (v) { return ('0' + v.toString(16)).slice(-2); }).join('');
+  }
+
   // ---------- the renderer ----------
   function Wheel(canvas) {
     this.canvas = canvas;
@@ -112,12 +121,68 @@
     this.g = null;
     this.L = {};
     this.glowCache = {};
+    this.blurDirty = false;
+    this.blurJob = null;
+    this.morph = null;
   }
 
-  Wheel.prototype.setPeople = function (people) {
+  // opts.quick: only the face is redrawn now; the motion-blur copies are
+  // rebuilt later (ensureBlur) so editing names stays responsive.
+  Wheel.prototype.setPeople = function (people, opts) {
     this.people = people;
     this.n = people.length;
-    if (this.cssSize) this.build();
+    this.morph = null;
+    if (!this.cssSize) return;
+    if (!this.n) {
+      // Nobody left: an empty stage until names are added again.
+      this.g = null;
+      this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+      this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+      return;
+    }
+    if (opts && opts.quick && this.g && this.L.frame) {
+      this.L.face = this.buildFace();
+      this.blurDirty = true;
+      this.blurJob = null;
+    } else {
+      this.build();
+    }
+  };
+
+  // The motion-blur copies, built all at once (or the rest of a job that
+  // blurLater started, so the result is the same either way).
+  Wheel.prototype.ensureBlur = function () {
+    if (!this.blurDirty || !this.L.face) return;
+    var job = this.blurJob && this.blurJob.src === this.L.face ? this.blurJob : new BlurJob(this.L.face);
+    while (!job.next()) { /* finish */ }
+    this.finishBlur(job);
+  };
+
+  // The same work spread over idle moments, a pass at a time, so a page
+  // that's busy with typing never stalls on it.
+  Wheel.prototype.blurLater = function () {
+    if (!this.blurDirty || !this.L.face) return;
+    var self = this;
+    var job = (this.blurJob = new BlurJob(this.L.face));
+    var idle = root.requestIdleCallback
+      ? function (fn) { root.requestIdleCallback(fn, { timeout: 400 }); }
+      : function (fn) { setTimeout(fn, 32); };
+    function work(deadline) {
+      if (self.blurJob !== job) return; // the face changed; a newer job takes over
+      do {
+        if (job.next()) { self.finishBlur(job); return; }
+      } while (deadline && deadline.timeRemaining && deadline.timeRemaining() > 12);
+      idle(work);
+    }
+    idle(work);
+  };
+
+  Wheel.prototype.finishBlur = function (job) {
+    this.L.blur1 = job.out[0];
+    this.L.blur2 = job.out[1];
+    this.L.blur3 = job.out[2];
+    this.blurDirty = false;
+    this.blurJob = null;
   };
 
   Wheel.prototype.resize = function (cssSize, dpr) {
@@ -159,11 +224,12 @@
     this.g = this.geometry();
     this.L.frame = this.buildFrame();
     this.L.face = this.buildFace();
-    this.L.blur1 = this.blurred(this.L.face, (5 * Math.PI) / 180);
-    this.L.blur2 = this.blurred(this.L.face, (13 * Math.PI) / 180);
-    this.L.blur3 = this.blurred(this.L.face, (30 * Math.PI) / 180);
+    this.blurDirty = true;
+    this.blurJob = null;
+    this.ensureBlur();
     this.L.shade = this.buildShade();
     this.L.hub = this.buildHub();
+    this.L.dots = null;
     this.buildPointer();
     this.buildBulbs();
     this.glowCache = {};
@@ -237,6 +303,8 @@
     return c;
   };
 
+  // The face at rest: every wedge the same size. Painted once per change and
+  // then only rotated.
   Wheel.prototype.buildFace = function () {
     var g = this.g;
     var R = g.Rface;
@@ -245,13 +313,43 @@
     var x = c.getContext('2d');
     var n = this.n;
     var d = TAU / n;
+    var names = this.people.map(function (p) { return p.name; });
+    var sizes = this.fitNames(x, R, names);
+    var layout = [];
+    for (var j = 0; j < n; j++) {
+      layout.push({
+        a0: (j - 0.5) * d,
+        span: d,
+        mid: j * d,
+        colour: this.people[j].colour,
+        labels: [{ text: names[j], size: sizes[j], alpha: 1 }]
+      });
+    }
     x.translate(D / 2, D / 2);
+    this.paintFace(x, R, layout, null);
+    return c;
+  };
+
+  /*
+   * Paints wedges, print, dividers, names and pegs for any layout, so the
+   * same artwork serves the wheel at rest and while names come and go.
+   * Angles are wheel angles (0 at 12 o'clock, clockwise) and x has its origin
+   * at the hub. dots: a ready-made halftone to lay over every wedge instead of
+   * printing each wedge's own, for frames where wedges are changing size.
+   */
+  Wheel.prototype.paintFace = function (x, R, layout, dots) {
+    var g = this.g;
+    var n = layout.length;
+    var j;
 
     // Wedges.
-    for (var j = 0; j < n; j++) {
-      var a0 = -Math.PI / 2 + (j - 0.5) * d;
+    for (j = 0; j < n; j++) {
+      var w = layout[j];
+      var d = w.span;
+      if (d <= 1e-4) continue;
+      var a0 = -Math.PI / 2 + w.a0;
       var a1 = a0 + d;
-      var col = this.people[j].colour;
+      var col = w.colour;
       var rgb = hexToRgb(col);
       x.beginPath();
       x.moveTo(0, 0);
@@ -263,7 +361,6 @@
       // A faint bevel: lit leading edge, shadowed trailing edge.
       x.save();
       x.clip();
-      var mid = (a0 + a1) / 2;
       var lg = x.createLinearGradient(
         Math.cos(a0) * R * 0.5, Math.sin(a0) * R * 0.5,
         Math.cos(a1) * R * 0.5, Math.sin(a1) * R * 0.5
@@ -274,27 +371,29 @@
       x.fillStyle = lg;
       x.fillRect(-R, -R, R * 2, R * 2);
 
-      // Printed halftone toward the rim, in a lighter tint of the wedge.
-      var tint = rgba(mix(rgb, [255, 255, 255], 0.55), 0.35);
-      x.fillStyle = tint;
-      var step = R * 0.034;
-      for (var r = R * 0.6; r < R * 0.985; r += step) {
-        var k = (r - R * 0.6) / (R * 0.385);
-        var dotR = step * 0.36 * Math.pow(k, 1.4);
-        if (dotR < 0.35) continue;
-        var arcLen = d * r;
-        var count = Math.max(1, Math.floor(arcLen / step));
-        var off = ((Math.round(r / step) % 2) * 0.5) / count;
-        for (var q = 0; q < count; q++) {
-          var aa = a0 + d * ((q + 0.5) / count + off);
-          x.beginPath();
-          x.arc(Math.cos(aa) * r, Math.sin(aa) * r, dotR, 0, TAU);
-          x.fill();
+      if (!dots) {
+        // Printed halftone toward the rim, in a lighter tint of the wedge.
+        var tint = rgba(mix(rgb, [255, 255, 255], 0.55), 0.35);
+        x.fillStyle = tint;
+        var step = R * 0.034;
+        for (var r = R * 0.6; r < R * 0.985; r += step) {
+          var k = (r - R * 0.6) / (R * 0.385);
+          var dotR = step * 0.36 * Math.pow(k, 1.4);
+          if (dotR < 0.35) continue;
+          var arcLen = d * r;
+          var count = Math.max(1, Math.floor(arcLen / step));
+          var off = ((Math.round(r / step) % 2) * 0.5) / count;
+          for (var q = 0; q < count; q++) {
+            var aa = a0 + d * ((q + 0.5) / count + off);
+            x.beginPath();
+            x.arc(Math.cos(aa) * r, Math.sin(aa) * r, dotR, 0, TAU);
+            x.fill();
+          }
         }
       }
       x.restore();
-      void mid;
     }
+    if (dots) x.drawImage(dots, -dots.width / 2, -dots.height / 2);
 
     // Depth: darker toward the hub, a little brighter toward the rim.
     var depth = x.createRadialGradient(0, 0, R * 0.12, 0, 0, R);
@@ -309,7 +408,7 @@
 
     // Brass dividers.
     for (j = 0; j < n; j++) {
-      var a = -Math.PI / 2 + (j - 0.5) * d;
+      var a = -Math.PI / 2 + layout[j].a0;
       var ca = Math.cos(a);
       var sa = Math.sin(a);
       x.lineCap = 'round';
@@ -328,11 +427,11 @@
     }
 
     // Names, reading outward from the hub like a real wheel.
-    this.drawNames(x, R, d);
+    this.paintNames(x, R, layout);
 
     // Pegs on every boundary.
     for (j = 0; j < n; j++) {
-      var pa = -Math.PI / 2 + (j - 0.5) * d;
+      var pa = -Math.PI / 2 + layout[j].a0;
       var px = Math.cos(pa) * g.Rpeg;
       var py = Math.sin(pa) * g.Rpeg;
       var pr = g.pegR;
@@ -349,23 +448,25 @@
       x.arc(px, py, pr, 0, TAU);
       x.fill();
     }
-    return c;
   };
 
   Wheel.prototype.fontFor = function (size) {
     return '800 ' + size + 'px "Big Shoulders", "Arial Narrow", "Roboto Condensed", sans-serif';
   };
 
-  Wheel.prototype.drawNames = function (x, R, d) {
-    var n = this.n;
+  // Type size for each name on a wheel of equal wedges. Each name is fitted,
+  // then they're pulled toward a common size so the wheel reads as one set;
+  // only names that genuinely need it end up smaller.
+  Wheel.prototype.fitNames = function (x, R, names) {
+    var n = names.length;
+    if (!n) return [];
+    var d = TAU / n;
     var outer = R * 0.865;
     var inner = R * 0.27;
     var sizes = [];
     var j;
-    // Fit each name, then pull them toward a common size so the wheel reads
-    // as one set; only names that genuinely need it end up smaller.
     for (j = 0; j < n; j++) {
-      var label = this.people[j].name.toUpperCase();
+      var label = names[j].toUpperCase();
       var size = Math.min(R * (n <= 6 ? 0.19 : 0.15), 2 * outer * Math.sin(Math.min(d / 2, Math.PI / 2)) * 0.62);
       for (var it = 0; it < 24; it++) {
         x.font = this.fontFor(size);
@@ -380,25 +481,159 @@
       sizes.push(size);
     }
     var common = sizes.slice().sort(function (a, b) { return a - b; })[Math.floor(n / 2)];
-    for (j = 0; j < n; j++) {
-      var s = Math.min(sizes[j], common * 1.0);
-      var person = this.people[j];
-      var ink = inkFor(person.colour);
-      x.save();
-      x.rotate(-Math.PI / 2 + j * d);
-      x.font = this.fontFor(s);
-      x.textAlign = 'right';
-      x.textBaseline = 'middle';
-      if ('letterSpacing' in x) x.letterSpacing = (s * 0.03).toFixed(1) + 'px';
-      x.shadowColor = ink === INK ? 'rgba(255,255,255,0.35)' : 'rgba(10, 6, 50, 0.45)';
-      x.shadowBlur = s * 0.08;
-      x.fillStyle = rgba(ink, 1);
-      x.fillText(person.name.toUpperCase(), outer, s * 0.04);
-      x.restore();
+    return sizes.map(function (s) { return Math.min(s, common * 1.0); });
+  };
+
+  Wheel.prototype.paintNames = function (x, R, layout) {
+    var outer = R * 0.865;
+    for (var j = 0; j < layout.length; j++) {
+      var w = layout[j];
+      var ink = inkFor(w.colour);
+      for (var l = 0; l < w.labels.length; l++) {
+        var lab = w.labels[l];
+        var s = lab.size;
+        if (lab.alpha <= 0.004 || !lab.text) continue;
+        x.save();
+        x.rotate(-Math.PI / 2 + w.mid);
+        if (lab.alpha < 1) x.globalAlpha = lab.alpha;
+        x.font = this.fontFor(s);
+        x.textAlign = 'right';
+        x.textBaseline = 'middle';
+        if ('letterSpacing' in x) x.letterSpacing = (s * 0.03).toFixed(1) + 'px';
+        x.shadowColor = ink === INK ? 'rgba(255,255,255,0.35)' : 'rgba(10, 6, 50, 0.45)';
+        x.shadowBlur = s * 0.08;
+        x.fillStyle = rgba(ink, 1);
+        x.fillText(lab.text.toUpperCase(), outer, s * 0.04);
+        x.restore();
+      }
     }
   };
 
+  // The halftone as one sheet of light dots, for re-flow frames. Over any
+  // ink it prints the same as each wedge's own lighter-tint dots.
+  Wheel.prototype.buildDots = function () {
+    var R = this.g.Rface;
+    var D = Math.ceil(R * 2) + 2;
+    var c = makeCanvas(D, D);
+    var x = c.getContext('2d');
+    x.translate(D / 2, D / 2);
+    x.fillStyle = 'rgba(255, 255, 255, 0.1925)';
+    var step = R * 0.034;
+    for (var r = R * 0.6; r < R * 0.985; r += step) {
+      var k = (r - R * 0.6) / (R * 0.385);
+      var dotR = step * 0.36 * Math.pow(k, 1.4);
+      if (dotR < 0.35) continue;
+      var count = Math.max(1, Math.floor((TAU * r) / step));
+      var off = ((Math.round(r / step) % 2) * 0.5) / count;
+      for (var q = 0; q < count; q++) {
+        var aa = -Math.PI / 2 + TAU * ((q + 0.5) / count + off);
+        x.beginPath();
+        x.arc(Math.cos(aa) * r, Math.sin(aa) * r, dotR, 0, TAU);
+        x.fill();
+      }
+    }
+    return c;
+  };
+
+  // ---------- re-flow when names are added or removed ----------
+  /*
+   * entries is the old and new line-ups merged in wheel order:
+   *   { w0, w1: 1 if on the wheel before / after, 0 if not,
+   *     n0, n1: name before / after, c0, c1: colour before / after,
+   *     v0, v1: 1 if veiled before / after }
+   * Draw with s.morph = progress (0..1, already eased).
+   */
+  Wheel.prototype.startMorph = function (entries) {
+    if (!this.g) return;
+    var R = this.g.Rface;
+    var x = makeCanvas(1, 1).getContext('2d');
+    var names0 = [];
+    var names1 = [];
+    var at0 = [];
+    var at1 = [];
+    entries.forEach(function (e, k) {
+      if (e.w0) { at0.push(k); names0.push(e.n0); }
+      if (e.w1) { at1.push(k); names1.push(e.n1); }
+    });
+    var s0 = this.fitNames(x, R, names0);
+    var s1 = this.fitNames(x, R, names1);
+    at0.forEach(function (k, i) { entries[k].s0 = s0[i]; });
+    at1.forEach(function (k, i) { entries[k].s1 = s1[i]; });
+    entries.forEach(function (e) {
+      if (!e.w0) e.s0 = e.s1;
+      if (!e.w1) e.s1 = e.s0;
+      e.rgb0 = hexToRgb(e.c0 || e.c1);
+      e.rgb1 = hexToRgb(e.c1 || e.c0);
+      e.v0 = e.v0 || 0;
+      e.v1 = e.v1 || 0;
+    });
+    if (!this.L.dots) this.L.dots = this.buildDots();
+    this.morph = { entries: entries };
+  };
+
+  Wheel.prototype.endMorph = function () {
+    this.morph = null;
+  };
+
+  // Wedge angles part-way through a re-flow. Wedges grow and shrink in
+  // proportion, so the wheel always stays full.
+  Wheel.morphSpans = function (entries, e) {
+    var ws = [];
+    var total = 0;
+    var k;
+    for (k = 0; k < entries.length; k++) {
+      var w = entries[k].w0 + (entries[k].w1 - entries[k].w0) * e;
+      ws.push(w);
+      total += w;
+    }
+    var out = [];
+    var a = 0;
+    for (k = 0; k < entries.length; k++) {
+      var span = total > 0 ? (TAU * ws[k]) / total : 0;
+      out.push({ a0: a, span: span, mid: a + span / 2 });
+      a += span;
+    }
+    return out;
+  };
+
+  Wheel.prototype.paintMorph = function (x, R, e) {
+    var m = this.morph;
+    var spans = Wheel.morphSpans(m.entries, e);
+    var layout = [];
+    for (var k = 0; k < m.entries.length; k++) {
+      var en = m.entries[k];
+      var sp = spans[k];
+      var size = en.s0 + (en.s1 - en.s0) * e;
+      var labels = [];
+      if (en.w0 && en.w1 && en.n0 === en.n1) {
+        labels.push({ text: en.n1, size: size, alpha: 1 });
+      } else {
+        // Leaving names fade early, arriving names late, so a name never
+        // crowds a wedge that's too narrow for it.
+        if (en.w0) labels.push({ text: en.n0, size: size, alpha: 1 - smoothstep(0, en.w1 ? 0.5 : 0.45, e) });
+        if (en.w1) labels.push({ text: en.n1, size: size, alpha: smoothstep(en.w0 ? 0.5 : 0.4, 1, e) });
+      }
+      layout.push({ a0: sp.a0, span: sp.span, mid: sp.mid, colour: toHex(mix(en.rgb0, en.rgb1, e)), labels: labels });
+    }
+    this.paintFace(x, R, layout, this.L.dots);
+    return spans;
+  };
+
   // Rotational motion blur by repeated rotate-and-average (32 taps).
+  function blurPass(a, b, step) {
+    var D = a.width;
+    var bx = b.getContext('2d');
+    bx.setTransform(1, 0, 0, 1, 0, 0);
+    bx.globalAlpha = 1;
+    bx.clearRect(0, 0, D, D);
+    bx.translate(D / 2, D / 2);
+    bx.rotate(-step);
+    bx.drawImage(a, -D / 2, -D / 2);
+    bx.rotate(2 * step);
+    bx.globalAlpha = 0.5;
+    bx.drawImage(a, -D / 2, -D / 2);
+  }
+
   Wheel.prototype.blurred = function (src, span) {
     var D = src.width;
     var a = makeCanvas(D, D);
@@ -407,21 +642,43 @@
     var step = span / 2;
     for (var k = 0; k < 5; k++) {
       step /= 2;
-      var bx = b.getContext('2d');
-      bx.setTransform(1, 0, 0, 1, 0, 0);
-      bx.globalAlpha = 1;
-      bx.clearRect(0, 0, D, D);
-      bx.translate(D / 2, D / 2);
-      bx.rotate(-step);
-      bx.drawImage(a, -D / 2, -D / 2);
-      bx.rotate(2 * step);
-      bx.globalAlpha = 0.5;
-      bx.drawImage(a, -D / 2, -D / 2);
+      blurPass(a, b, step);
       var t = a;
       a = b;
       b = t;
     }
     return a;
+  };
+
+  // All three blur copies of a face, one rotate-and-average pass per call.
+  var BLUR_SPANS = [(5 * Math.PI) / 180, (13 * Math.PI) / 180, (30 * Math.PI) / 180];
+  function BlurJob(src) {
+    this.src = src;
+    this.out = [];
+    this.layer = 0;
+    this.k = 0;
+  }
+  BlurJob.prototype.next = function () {
+    if (this.layer >= BLUR_SPANS.length) return true;
+    var D = this.src.width;
+    if (this.k === 0) {
+      this.a = makeCanvas(D, D);
+      this.a.getContext('2d').drawImage(this.src, 0, 0);
+      this.b = makeCanvas(D, D);
+      this.step = BLUR_SPANS[this.layer] / 2;
+    }
+    this.step /= 2;
+    blurPass(this.a, this.b, this.step);
+    var t = this.a;
+    this.a = this.b;
+    this.b = t;
+    if (++this.k === 5) {
+      this.out.push(this.a);
+      this.a = this.b = null;
+      this.layer += 1;
+      this.k = 0;
+    }
+    return this.layer >= BLUR_SPANS.length;
   };
 
   Wheel.prototype.buildShade = function () {
@@ -676,6 +933,13 @@
     x.save();
     x.translate(g.cx, g.cy);
     x.rotate(s.theta);
+    if (this.morph && s.morph != null) {
+      this.drawMorph(x, R, D, s);
+      x.restore();
+      this.drawFixtures(s);
+      return;
+    }
+    if (this.blurDirty && perFrame >= 2) this.ensureBlur();
     var layers = [
       [0, L.face],
       [3.5, L.blur1],
@@ -740,7 +1004,41 @@
       x.shadowBlur = 0;
     }
     x.restore();
+    this.drawFixtures(s);
+  };
 
+  // A frame of the re-flow: the face painted live, settling into the
+  // finished face over the last few frames.
+  Wheel.prototype.drawMorph = function (x, R, D, s) {
+    var spans = this.paintMorph(x, R, s.morph);
+    if (s.morphFade > 0 && s.thetaEnd != null) {
+      x.save();
+      x.rotate(s.thetaEnd - s.theta);
+      x.globalAlpha = Math.min(1, s.morphFade);
+      x.drawImage(this.L.face, -D / 2, -D / 2);
+      x.restore();
+    }
+    // Veils travel with their wedges.
+    if (!(s.veil > 0)) return;
+    for (var k = 0; k < spans.length; k++) {
+      var en = this.morph.entries[k];
+      var v = (en.v0 + (en.v1 - en.v0) * s.morph) * 0.5 * s.veil;
+      if (v <= 0.002 || spans[k].span <= 1e-4) continue;
+      var va = -Math.PI / 2 + spans[k].a0;
+      x.fillStyle = 'rgba(8, 12, 60, ' + v + ')';
+      x.beginPath();
+      x.moveTo(0, 0);
+      x.arc(0, 0, R, va, va + spans[k].span);
+      x.closePath();
+      x.fill();
+    }
+  };
+
+  // Everything in front of the face: lighting, bezel, bulbs, hub, flapper.
+  Wheel.prototype.drawFixtures = function (s) {
+    var g = this.g;
+    var x = this.ctx;
+    var L = this.L;
     x.drawImage(L.shade, 0, 0);
     this.drawBulbs(s);
     var hub = L.hub;

@@ -8,7 +8,8 @@ A game-show wheel for thanking people. Spin it, it ticks its way round to someon
 - When it lands, the card shows that person's message. **Spin again** goes straight into the next spin; **Close** (or Esc) puts the wheel back.
 - Nobody is ever picked twice in a row. Their wedge is veiled and the caption under the button says they're sitting out.
 - The **Line-up** button (top right) shows who has been applauded and has a switch for *Everyone gets a turn first*: with it on, nobody comes up again until everyone has had their applause.
-- Sound and full screen toggles sit beside it. History, the sound setting and the wheel's position are remembered in the browser.
+- The panel's **Edit** tab adds, removes and renames people and changes their messages. The wheel re-flows to fit as you go, and a removal can be undone. **Restore the people.js list** puts everything back.
+- Sound and full screen toggles sit beside it. History, the sound setting, the wheel's position and any edits are remembered in the browser.
 
 ## Your names and messages
 
@@ -25,7 +26,9 @@ window.ROUND_OF_APPLAUSE = {
 };
 ```
 
-`from` and `colour` are optional per person. The wheel redraws itself for anything from 2 to about 40 people, and long names shrink to fit.
+`from` and `colour` are optional per person. The wheel redraws itself for anything from 2 to 40 people, and long names shrink to fit.
+
+`people.js` is the starting list for everyone who opens the page. Changes made under **Edit** are saved only in that browser, so other people won't see them. To change the list for everyone, edit `people.js`.
 
 ## Publishing
 
