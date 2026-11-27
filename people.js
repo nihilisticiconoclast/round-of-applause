@@ -2,8 +2,10 @@
  * Round of Applause: who's on the wheel.
  *
  * These are sample names and messages. Replace them with your own; the wheel
- * redraws itself to fit anywhere from 2 to about 40 people. Each person needs
- * a name and a message. Optional per person:
+ * redraws itself to fit anywhere from 2 to 40 people. This is the list
+ * everyone sees. The Edit tab on the page changes it in one browser only.
+ *
+ * Each person needs a name and a message. Optional per person:
  *   from:   overrides the sign-off for that card, e.g. 'From the data team'
  *   colour: a hex colour for their wedge and card, e.g. '#ff4f8b'
  */
